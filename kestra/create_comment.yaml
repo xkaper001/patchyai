@@ -1,0 +1,34 @@
+id: create_comment
+namespace: patchy
+
+inputs:
+  - id: issue_number
+    type: STRING
+    description: Issue or Pull Request Number
+    required: true
+  - id: installation_id
+    type: STRING
+    required: true
+    description: Installation ID
+  - id: comment_body
+    type: STRING
+    required: true
+    description: Content of the message
+  - id: repository
+    type: STRING
+    required: true
+    description: Full name of the repository in format user_name/repository_name
+
+tasks:
+  - id: get_token
+    type: io.kestra.plugin.core.flow.Subflow
+    namespace: patchy
+    inputs:
+      installation_id: "{{inputs.installation_id}}"
+    flowId: get_auth_token
+  - id: comment
+    type: io.kestra.plugin.github.issues.Comment
+    issueNumber: "{{inputs.issue_number}}"
+    body: "{{inputs.comment_body}}"
+    jwtToken: "{{outputs.get_token.outputs.gh_token}}"
+    repository: "{{inputs.repository}}"

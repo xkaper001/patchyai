@@ -1,0 +1,81 @@
+id: get_auth_token
+namespace: patchy
+description: Get Authenticated Token from GitHub for sending an authenticated request.
+inputs:
+  - id: installation_id
+    type: STRING
+    description: Installation ID
+
+tasks:
+  - id: get_installation_token
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    containerImage: ""
+    commands:
+      - apt-get update && apt-get install -y curl openssl jq bash
+      - |
+        cat << 'EOF' > /jwt.sh
+        #!/usr/bin/env bash
+
+        client_id=$1 # Client ID as first argument
+        pem=$( cat $2 ) # file path of the private key as second argument
+
+        now=$(date +%s)
+        iat=$((${now} - 60)) # Issues 60 seconds in the past
+        exp=$((${now} + 600)) # Expires 10 minutes in the future
+
+        b64enc() { openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n'; }
+
+        header_json='{
+            "typ":"JWT",
+            "alg":"RS256"
+        }'
+        # Header encode
+        header=$( echo -n "${header_json}" | b64enc )
+
+        payload_json="{
+            \"iat\":${iat},
+            \"exp\":${exp},
+            \"iss\":\"${client_id}\"
+        }"
+        # Payload encode
+        payload=$( echo -n "${payload_json}" | b64enc )
+
+        # Signature
+        header_payload="${header}"."${payload}"
+        signature=$(
+            openssl dgst -sha256 -sign <(echo -n "${pem}") \
+            <(echo -n "${header_payload}") | b64enc
+        )
+
+        # Create JWT
+        JWT="${header_payload}"."${signature}"
+        printf '%s\n' "$JWT"
+        EOF
+      - chmod +x /jwt.sh
+      - |
+        echo "$GITHUB_PRIVATE_KEY" > /tmp/private-key.pem
+      - |
+        JWT=$(/jwt.sh "$GITHUB_APP_ID" /tmp/private-key.pem)
+        echo "$JWT" > jwt.txt
+    env:
+      GITHUB_APP_ID: "{{ secret('GITHUB_APP_ID') }}"
+      GITHUB_PRIVATE_KEY: "{{ secret('GITHUB_PRIVATE_KEY') }}"
+    outputFiles:
+      - jwt.txt
+    targetOS: LINUX
+  - id: get_token
+    type: io.kestra.plugin.core.http.Request
+    uri: https://api.github.com/app/installations/{{inputs.installation_id}}/access_tokens
+    method: POST
+    headers:
+      Authorization: Bearer {{ read(outputs.get_installation_token.outputFiles['jwt.txt']) }}
+      Accept: application/vnd.github+json
+
+outputs:
+  - id: gh_token
+    type: STRING
+    description: GitHub Installation Access Token
+    required: true
+    value: "{{(outputs.get_token.body | jq('.token') | first )}}"

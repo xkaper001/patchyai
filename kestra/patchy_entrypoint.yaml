@@ -1,0 +1,131 @@
+id: patchy_entrypoint
+namespace: patchy
+
+tasks:
+  - id: log_incoming
+    type: io.kestra.plugin.core.log.Log
+    level: INFO
+    message: |
+      Incoming GitHub event {{ trigger.headers['X-GitHub-Event'][0] }} for {{ trigger.body.repository.full_name ?? 'unknown' }}
+
+  - id: save_installation_id
+    type: io.kestra.plugin.core.kv.Set
+    namespace: patchy
+    key: "IID_{{ trigger.body.installation.id }}"
+    value: "{{ trigger.body.installation.id }}"
+    runIf: "{{ (trigger.body.action ?? 'nope') == 'created' }}"
+
+  - id: debug_body
+    type: io.kestra.plugin.core.debug.Return
+    format: "{{ trigger.body }}"
+
+  # 1) Build a compact event context passed to the AI
+  - id: build_event_context
+    type: io.kestra.plugin.scripts.python.Script
+    dependencies:
+      - kestra
+    script: |
+      import json
+      from kestra import Kestra
+
+      # All values passed via environment variables as strings
+      event_type = """{{ trigger.headers['X-GitHub-Event'][0] }}"""
+      repo_full_name = """{{ trigger.body | jq('.repository.full_name') | first }}"""
+      repo_private = """{{ trigger.body | jq('.repository.private') | first }}"""
+      install_id = """{{ trigger.body | jq('.installation.id') | first }}"""
+      sender_login = """{{ trigger.body | jq('.sender.login') | first }}"""
+
+      # Keep only the useful parts to avoid blowing up context
+      ctx = {
+          "event_type": event_type, 
+          "repository": {
+              "full_name": repo_full_name if repo_full_name != "null" else None,
+              "private": repo_private == "true",
+          },
+          "installation": {
+              "id": int(install_id) if install_id != "null" else None,
+              "account": sender_login if sender_login != "null" else None,
+          },
+      }
+
+      if event_type == "push":
+          ctx["ref"] = """{{ trigger.body | jq('.ref') | first }}"""
+          ctx["pusher"] = """{{ trigger.body | jq('.pusher.name') | first }}"""
+      elif event_type == "issue_comment":
+          ctx["comment"] = {
+              "body": """{{ trigger.body | jq('.comment.body') | first }}""",
+              "user": """{{ trigger.body | jq('.comment.user.login') | first }}""",
+              "issue_number": """{{ trigger.body | jq('.issue.number') | first }}""",
+          }
+      elif event_type == "pull_request":
+          ctx["pull_request"] = {
+              "number": """{{ trigger.body | jq('.pull_request.number') | first }}""",
+              "state": """{{ trigger.body | jq('.pull_request.state') | first }}""",
+              "title": """{{ trigger.body | jq('.pull_request.title') | first }}""",
+              "user": """{{ trigger.body | jq('.pull_request.user.login') | first }}""",
+          }
+
+      Kestra.outputs({"event_context": ctx})
+
+  # 2) AI Agent: decide what to do with this event
+  - id: ai_decide
+    type: io.kestra.plugin.ai.agent.AIAgent
+    prompt: |
+      You are Patchy, an AI assistant for GitHub repositories.
+
+      Here is the event context:
+      {{ outputs.build_event_context.vars.event_context | json }}
+
+      Your job is to analyze this GitHub event and take appropriate actions.
+
+      For issue_comment events:
+      - If the comment mentions "@patchyai", you should respond to the user
+      - Use the create_comment tool to post a response on the issue
+      - Be helpful and conversational
+      - When calling create_comment, you MUST provide these inputs:
+        * issue_number: the issue/PR number (integer from event_context.comment.issue_number)
+        * comment_body: your response message to the user (string)
+        * repository: the full repository name (string from event_context.repository.full_name)
+        * installation_id: the GitHub App installation ID (integer from event_context.installation.id)
+
+      For other events:
+      - Analyze the event and decide if any action is needed
+      - You can create comments, run scans, or perform other automated tasks
+
+      Always use the available tools to take actions rather than just describing what you would do.
+      Make sure to extract the required information from the event_context and pass it to the tools.
+    tools:
+      - type: io.kestra.plugin.ai.tool.KestraFlow
+        namespace: patchy
+        description: |
+          Create a comment on a GitHub issue or pull request. 
+          Required inputs:
+          - issue_number: The issue or PR number (integer)
+          - comment_body: The comment text to post (string)
+          - repository: Full repository name like "owner/repo" (string)
+          - installation_id: GitHub App installation ID (integer)
+        flowId: create_comment
+
+triggers:
+  - id: hook
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: patchy_test
+
+pluginDefaults:
+  - type: io.kestra.plugin.ai.agent.AIAgent
+    values:
+      provider:
+        type: io.kestra.plugin.ai.provider.OpenRouter
+        modelName: z-ai/glm-4.6
+        apiKey: "{{ secret('OPENROUTER_API_KEY') }}"
+        configuration:
+          logRequests: true
+          logResponses: true
+      tools:
+        - type: io.kestra.plugin.ai.tool.KestraFlow
+      memory:
+        type: io.kestra.plugin.ai.memory.Redis
+        host: redis
+        port: 6379
+        memoryId: "{{ (trigger.body.repository is defined and trigger.body.repository.id is defined) ? ((trigger.body.sender.id ?? 'user') ~ '_' ~ trigger.body.repository.id) : (trigger.body.sender.id ?? 'default') }}"
+        messages: 100
