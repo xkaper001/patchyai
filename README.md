@@ -26,7 +26,7 @@ docker run -it --rm \
 
 #### Environment Variables
 
-- `OPENROUTER_API_KEY` (required): Your OpenRouter API key for authentication
+- `OPENROUTER_API_KEY` (required): Your OpenRouter API key for authentication. The container will exit with an error if this is not provided.
 - `OPENROUTER_MODEL_ID` (optional): Model to use (default: `openai/gpt-oss-120b`)
 
 #### Examples
