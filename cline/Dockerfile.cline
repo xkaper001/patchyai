@@ -1,0 +1,28 @@
+FROM node:22-alpine
+
+# Security: Update packages and remove cache
+RUN apk add --no-cache ca-certificates
+
+# Security: Create non-root user
+RUN addgroup -g 10001 clineuser && \
+    adduser -D -u 10001 -G clineuser clineuser
+
+ARG CLINE_VERSION=1.0.8  
+# Install cline CLI globally
+RUN npm install -g "cline@${CLINE_VERSION}" && \
+    npm cache clean --force
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy entrypoint script
+COPY cline/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && \
+    chown clineuser:clineuser /entrypoint.sh && \
+    chown -R clineuser:clineuser /workspace
+
+# Security: Switch to non-root user
+USER clineuser
+
+# Default entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
