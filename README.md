@@ -2,16 +2,32 @@
 
 > An autonomous GitHub App that continuously improves repository security by detecting and fixing known vulnerabilities in dependencies and codebases.
 
-![PatchyAI Demo](assets/thumb.png)
-<!-- Add showcase image here -->
+[![Watch the demo](https://img.youtube.com/vi/std1Ihd9eC8/maxresdefault.jpg)](https://youtu.be/std1Ihd9eC8)
 
 ## 📹 Demo on YouTube
 
-[![Watch the demo](https://img.youtube.com/vi/std1Ihd9eC8/maxresdefault.jpg)](https://youtu.be/std1Ihd9eC8)
+[Watch the demo](https://youtu.be/std1Ihd9eC8)
 
 ## 🎯 Overview
 
 PatchyAI was born out of a real security incident. After receiving an email from Vercel about the recently discovered **react2shell** vulnerability (CVSS 10.0) affecting one of my projects, I realized the need for automated security patching. Instead of manually reviewing and fixing vulnerabilities across multiple repositories, I built Patchy to automate the entire process.
+
+## 📂 Project Structure
+
+```
+patchyai/
+├── assets/          # Static assets and images
+├── cline/           # Docker environment for AI agent
+│   ├── Dockerfile.patchy
+│   └── entrypoint.sh
+├── kestra/          # Kestra workflow definitions
+│   ├── patchy_entrypoint.yaml
+│   ├── vulnerability_scan.yaml
+│   └── ...
+└── webapp/          # Next.js setup & landing page
+    ├── src/
+    └── package.json
+```
 
 ## ✨ Features
 
@@ -27,6 +43,7 @@ Built for modern **DevSecOps** workflows, PatchyAI integrates seamlessly into Gi
 
 - **[Kestra](https://kestra.io/)**: Workflow orchestration and automation
 - **[Cline CLI](https://github.com/cline/cline)**: AI-powered vulnerability fixing
+- **[Next.js 16](https://nextjs.org/)**: Web application framework (React 19, Tailwind CSS 4)
 - **[Vercel](https://vercel.com/)**: Web application hosting
 - **[OSV Scanner](https://google.github.io/osv-scanner/)**: Vulnerability detection
 - **GitHub API**: Repository management and PR automation
@@ -35,7 +52,7 @@ Built for modern **DevSecOps** workflows, PatchyAI integrates seamlessly into Gi
 
 ### Installing the GitHub App
 
-1. Visit the [PatchyAI GitHub App](https://github.com/apps/patchyai) <!-- Update with actual link -->
+1. Visit the [PatchyAI GitHub App](https://github.com/apps/patchyai)
 2. Click "Install" and select the repositories you want to protect
 3. Add GEMINI API Key on the redirected setup page.
 
@@ -46,16 +63,48 @@ You can trigger a manual scan by creating an issue or commenting on a PR with:
 @patchyai scan
 ```
 
+### Local Development
+
+To run the web application locally:
+
+1. Navigate to the webapp directory:
+   ```bash
+   cd webapp
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Run the development server:
+   ```bash
+   npm run dev
+   ```
+
+4. Open [http://localhost:3000](http://localhost:3000) with your browser.
+
 ## 🏗️ Architecture
 
 PatchyAI uses a serverless workflow architecture:
 
 1. **GitHub Webhooks** → Triggers on push, PR, or scheduled scans
-2. **Kestra Workflows** → Orchestrates scanning and fixing processes
-3. **Cline CLI** → AI agent performs intelligent code fixes
-4. **GitHub API** → Creates branches, commits, and pull requests
+2. **Next.js Webapp** → Handles user onboarding and API key configuration
+3. **Kestra Workflows** → Orchestrates scanning and fixing processes
+4. **Cline CLI** → AI agent performs intelligent code fixes
+5. **GitHub API** → Creates branches, commits, and pull requests
 
-## 🔐 Security & Privacy
+## � Docker Environment
+
+PatchyAI runs its scanning and fixing tasks within a secure, isolated Docker container defined in `cline/Dockerfile.patchy`.
+
+- **Base Image**: `node:22-alpine` for a lightweight footprint.
+- **Tools Installed**:
+  - `osv-scanner`: For detecting vulnerabilities.
+  - `cline`: The AI-powered CLI agent for implementing fixes.
+- **Security**: Runs as a non-root user (`clineuser`) to ensure isolation and security during execution.
+
+## �🔐 Security & Privacy
 
 - All scans run in isolated Docker containers
 - No code is stored permanently; only vulnerability reports are retained
