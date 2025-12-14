@@ -19,6 +19,19 @@ tasks:
     type: io.kestra.plugin.core.debug.Return
     format: "{{ trigger.body }}"
 
+  - id: check_patchy_mention
+    type: io.kestra.plugin.scripts.python.Script
+    script: |
+      import json
+      from kestra import Kestra
+
+      # Read directly from trigger body to avoid depending on built context
+      raw_body = """{{ trigger.body | jq('.comment.body') | first | default('') }}"""
+      should_run = "@patchyai" in raw_body.lower()
+      Kestra.outputs({"should_run": should_run})
+    dependencies:
+      - Kestra
+
   # 1) Build a compact event context passed to the AI
   - id: build_event_context
     type: io.kestra.plugin.scripts.python.Script
@@ -52,10 +65,11 @@ tasks:
           ctx["ref"] = """{{ trigger.body | jq('.ref') | first }}"""
           ctx["pusher"] = """{{ trigger.body | jq('.pusher.name') | first }}"""
       elif event_type == "issue_comment":
+          issue_number_raw = """{{ trigger.body | jq('.issue.number') | first }}"""
           ctx["comment"] = {
               "body": """{{ trigger.body | jq('.comment.body') | first }}""",
               "user": """{{ trigger.body | jq('.comment.user.login') | first }}""",
-              "issue_number": """{{ trigger.body | jq('.issue.number') | first }}""",
+              "issue_number": int(issue_number_raw) if issue_number_raw != "null" else None,
           }
       elif event_type == "pull_request":
           ctx["pull_request"] = {
@@ -64,68 +78,76 @@ tasks:
               "title": """{{ trigger.body | jq('.pull_request.title') | first }}""",
               "user": """{{ trigger.body | jq('.pull_request.user.login') | first }}""",
           }
-
       Kestra.outputs({"event_context": ctx})
-
-  # 2) AI Agent: decide what to do with this event
   - id: ai_decide
     type: io.kestra.plugin.ai.agent.AIAgent
+    runIf: "{{ outputs.check_patchy_mention.vars.should_run == true }}"
     prompt: |
-      You are Patchy, an AI assistant for GitHub repositories.
+      You are Patchy, an automation agent for GitHub repositories.
 
-      Here is the event context:
+      Your task is to EXECUTE exactly ONE Kestra flow based on the user's comment.
+
+      Available flows (namespace: patchy):
+      - create_comment
+      - vulnerability_scan_and_comment
+      - vulnerability_fix
+
+      Decision rules:
+      - If the user greets you or asks general questions → execute create_comment
+      - If the user asks to scan the repository → execute vulnerability_scan_and_comment
+      - If the user approves fixes after a scan → execute vulnerability_fix
+      - If no action is required → DO NOT execute any flow
+
+      Flow input requirements:
+
+      create_comment:
+        - repository (string)
+        - installation_id (string)
+        - issue_number (int)
+        - comment_body (string)
+
+      vulnerability_scan_and_comment:
+        - repository (string)
+        - installation_id (string)
+        - issue_number (int)
+
+      vulnerability_fix:
+        - repository (string) 
+        - installation_id (string)
+        - scan_report (file uri)
+        - fix_scope (string, optional)
+
+      Context:
       {{ outputs.build_event_context.vars.event_context | json }}
 
-      Your job is to analyze this GitHub event and take appropriate actions.
-
-      For issue_comment events:
-      - If the comment mentions "@patchyai", you should respond to the user
-      - Use the create_comment tool to post a response on the issue
-      - Be helpful and conversational
-      - When calling create_comment, you MUST provide these inputs:
-        * issue_number: the issue/PR number (integer from event_context.comment.issue_number)
-        * comment_body: your response message to the user (string)
-        * repository: the full repository name (string from event_context.repository.full_name)
-        * installation_id: the GitHub App installation ID (integer from event_context.installation.id)
-
-      For other events:
-      - Analyze the event and decide if any action is needed
-      - You can create comments, run scans, or perform other automated tasks
-
-      Always use the available tools to take actions rather than just describing what you would do.
-      Make sure to extract the required information from the event_context and pass it to the tools.
+      IMPORTANT:
+      - You MUST call a flow if you respond.
+      - Do NOT reply in plain text.
+      - Do NOT explain your reasoning.
+      - Return ONLY the execution result of the flow.
+    provider:
+      type: io.kestra.plugin.ai.provider.GoogleGemini
+      modelName: gemini-2.5-flash-lite
+      apiKey: {{ kv('API_GEMINI_' ~ trigger.body.installation.id) }}
     tools:
       - type: io.kestra.plugin.ai.tool.KestraFlow
-        namespace: patchy
-        description: |
-          Create a comment on a GitHub issue or pull request. 
-          Required inputs:
-          - issue_number: The issue or PR number (integer)
-          - comment_body: The comment text to post (string)
-          - repository: Full repository name like "owner/repo" (string)
-          - installation_id: GitHub App installation ID (integer)
-        flowId: create_comment
+    memory:
+      type: io.kestra.plugin.ai.memory.Redis
+      host: redis
+      memoryId: "{{ (trigger.body.repository is defined and trigger.body.repository.id is defined) ? ((trigger.body.sender.id ?? 'user') ~ '_' ~ trigger.body.repository.id) : (trigger.body.sender.id ?? 'default') }}"
+      messages: 100
+
+  - id: execution_uri
+    type: io.kestra.plugin.core.debug.Return
+    runIf: "{{ outputs.ai_decide.toolExecutions | length > 0 }}"
+    format: "{{ (kestra.url ?? 'http://localhost:8080/') ~ 'ui/' ~ fromJson((outputs.ai_decide.toolExecutions | first).result).tenantId ~ '/executions/patchy/' ~ fromJson((outputs.ai_decide.toolExecutions | first).result).flowId ~ '/' ~ fromJson((outputs.ai_decide.toolExecutions | first).result).id }}"
+
+  - id: skip_log
+    type: io.kestra.plugin.core.log.Log
+    runIf: "{{ outputs.check_patchy_mention.vars.should_run == false }}"
+    message: "No @patchyai mention found. Skipping."
 
 triggers:
   - id: hook
     type: io.kestra.plugin.core.trigger.Webhook
     key: patchy_test
-
-pluginDefaults:
-  - type: io.kestra.plugin.ai.agent.AIAgent
-    values:
-      provider:
-        type: io.kestra.plugin.ai.provider.OpenRouter
-        modelName: z-ai/glm-4.6
-        apiKey: "{{ secret('OPENROUTER_API_KEY') }}"
-        configuration:
-          logRequests: true
-          logResponses: true
-      tools:
-        - type: io.kestra.plugin.ai.tool.KestraFlow
-      memory:
-        type: io.kestra.plugin.ai.memory.Redis
-        host: redis
-        port: 6379
-        memoryId: "{{ (trigger.body.repository is defined and trigger.body.repository.id is defined) ? ((trigger.body.sender.id ?? 'user') ~ '_' ~ trigger.body.repository.id) : (trigger.body.sender.id ?? 'default') }}"
-        messages: 100

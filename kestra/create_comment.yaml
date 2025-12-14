@@ -1,9 +1,11 @@
 id: create_comment
 namespace: patchy
+description: |
+  Creates a comment on a GitHub Issue or Pull Request using the GitHub App installation context. Used by Patchy to report scan results, actions taken, or explain why no action was required.
 
 inputs:
   - id: issue_number
-    type: STRING
+    type: INT
     description: Issue or Pull Request Number
     required: true
   - id: installation_id
